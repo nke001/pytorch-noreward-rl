@@ -32,7 +32,7 @@ def train(rank, args, shared_model, optimizer=None):
     env = env_wrapper.create_doom(args.record, outdir=args.outdir)
     num_outputs = env.action_space.n
     model = ActorCritic(env.observation_space.shape[0], env.action_space)
-
+    model.cuda()
     if optimizer is None:
         optimizer = optim.Adam(shared_model.parameters(), lr=args.lr)
 
@@ -66,7 +66,7 @@ def train(rank, args, shared_model, optimizer=None):
 
         for step in range(args.num_steps):
             value, logit, (hx, cx) = model(
-                (Variable(state.unsqueeze(0)), (hx, cx)),
+                (Variable(state.unsqueeze(0)).cuda(), (hx.cuda(), cx.cuda())),
                 icm = False
             )
             s_t = state
@@ -80,21 +80,23 @@ def train(rank, args, shared_model, optimizer=None):
 
             oh_action = torch.Tensor(1, num_outputs)
             oh_action.zero_()
-            oh_action.scatter_(1,action,1)
-            oh_action = Variable(oh_action)
+            
+            oh_action.scatter_(1,action.cpu(),1)
+            oh_action = Variable(oh_action).cuda()
             a_t = oh_action
             actions.append(oh_action)
 
-            state, reward, done, _ = env.step(action.numpy()[0][0])
+            state, reward, done, _ = env.step(action.cpu().numpy()[0][0])
             state = torch.from_numpy(state)
 
             done = done or episode_length >= args.max_episode_length
             reward = max(min(reward, 1), -1)
             s_t1 = state
+
             vec_st1, inverse, forward = model(
                 (
-                    Variable(s_t.unsqueeze(0)),
-                    Variable(s_t1.unsqueeze(0)),
+                    Variable(s_t.unsqueeze(0)).cuda(),
+                    Variable(s_t1.unsqueeze(0)).cuda(),
                     a_t
                 ),
                 icm = True
@@ -102,7 +104,7 @@ def train(rank, args, shared_model, optimizer=None):
 
             reward_intrinsic = args.eta * ((vec_st1 - forward).pow(2)).sum(1) / 2.
             #reward_intrinsic = args.eta * ((vec_st1 - forward).pow(2)).sum(1).sqrt() / 2.
-            reward_intrinsic = reward_intrinsic.data.numpy()[0][0]
+            reward_intrinsic = reward_intrinsic.cpu().data.numpy()[0]
             reward += reward_intrinsic
 
             if done:
@@ -118,16 +120,16 @@ def train(rank, args, shared_model, optimizer=None):
 
             if done:
                 break
-
+        
         R = torch.zeros(1, 1)
         if not done:
             value, _, _ = model(
-                (Variable(state.unsqueeze(0)), (hx, cx)),
+                (Variable(state.unsqueeze(0)).cuda(), (hx.cuda(), cx.cuda())),
                 icm = False
             )
-            R = value.data
+            R = value.cpu().data
 
-        values.append(Variable(R))
+        values.append(Variable(R).cuda())
         policy_loss = 0
         value_loss = 0
         inverse_loss = 0
@@ -137,23 +139,23 @@ def train(rank, args, shared_model, optimizer=None):
         gae = torch.zeros(1, 1)
         for i in reversed(range(len(rewards))):
             R = args.gamma * R + rewards[i]
-            advantage = R - values[i]
+            advantage = R - values[i].cpu()
             value_loss = value_loss + 0.5 * advantage.pow(2)
 
             # Generalized Advantage Estimataion
             delta_t = rewards[i] + args.gamma * \
-                values[i + 1].data - values[i].data
+                values[i + 1].cpu().data - values[i].cpu().data
             gae = gae * args.gamma * args.tau + delta_t
 
             policy_loss = policy_loss - \
-                log_probs[i] * Variable(gae) - 0.01 * entropies[i]
+                log_probs[i].cpu() * Variable(gae) - 0.01 * entropies[i].cpu()
             
             cross_entropy = - (actions[i] * torch.log(inverses[i] + 1e-15)).sum(1)
             inverse_loss = inverse_loss + cross_entropy
             forward_err = forwards[i] - vec_st1s[i]
             forward_loss = forward_loss + 0.5 * (forward_err.pow(2)).sum(1)
 
-
+        
         optimizer.zero_grad()
 
         ((1-args.beta) * inverse_loss + args.beta * forward_loss).backward(retain_variables=True)
@@ -162,6 +164,8 @@ def train(rank, args, shared_model, optimizer=None):
         #(((1-args.beta) * inverse_loss + args.beta * forward_loss) + args.lmbda * (policy_loss + 0.5 * value_loss)).backward()
 
         torch.nn.utils.clip_grad_norm(model.parameters(), 40)
-
+        if (episode_length + 1) % 50 == 0:
+            log = 'step %d: forward loss %.5f, inverse loss %.5f, cross_entropy %.5fi \n'%(episode_length, forward_loss, inverse_loss, cross_entropy)
+            print(log)
         ensure_shared_grads(model, shared_model)
         optimizer.step()

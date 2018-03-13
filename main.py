@@ -33,7 +33,7 @@ parser.add_argument('--tau', type=float, default=1.00, metavar='T',
                     help='parameter for GAE (default: 1.00)')
 parser.add_argument('--seed', type=int, default=1, metavar='S',
                     help='random seed (default: 1)')
-parser.add_argument('--num-processes', type=int, default=4, metavar='N',
+parser.add_argument('--num-processes', type=int, default=0, metavar='N',
                     help='how many training processes to use (default: 4)')
 parser.add_argument('--num-steps', type=int, default=20, metavar='NS',
                     help='number of forward steps in A3C (default: 20)')
@@ -63,7 +63,7 @@ if __name__ == '__main__':
     #env = create_atari_env(args.env_name)
     env = env_wrapper.create_doom(args.record, outdir=args.outdir)
     shared_model = ActorCritic(
-        env.observation_space.shape[0], env.action_space)
+        env.observation_space.shape[0], env.action_space).cuda()
     shared_model.share_memory()
 
     if args.no_shared:
@@ -72,15 +72,21 @@ if __name__ == '__main__':
         optimizer = my_optim.SharedAdam(shared_model.parameters(), lr=args.lr)
         optimizer.share_memory()
 
-    processes = []
+    debug = True
+    
+    if debug:
+        train(0, args, shared_model, optimizer)    
 
-    p = mp.Process(target=test, args=(args.num_processes, args, shared_model))
-    p.start()
-    processes.append(p)
+    else:
+        processes = []
 
-    for rank in range(0, args.num_processes):
-        p = mp.Process(target=train, args=(rank, args, shared_model, optimizer))
+        p = mp.Process(target=test, args=(args.num_processes, args, shared_model))
         p.start()
         processes.append(p)
-    for p in processes:
-        p.join()
+
+        for rank in range(0, args.num_processes):
+            p = mp.Process(target=train, args=(rank, args, shared_model, optimizer))
+            p.start()
+            processes.append(p)
+        for p in processes:
+            p.join()
