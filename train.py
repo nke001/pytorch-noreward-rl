@@ -92,7 +92,6 @@ def train(rank, args, shared_model, optimizer=None):
             done = done or episode_length >= args.max_episode_length
             reward = max(min(reward, 1), -1)
             s_t1 = state
-
             vec_st1, inverse, forward = model(
                 (
                     Variable(s_t.unsqueeze(0)).cuda(),

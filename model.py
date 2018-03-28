@@ -106,11 +106,10 @@ class ActorCritic(torch.nn.Module):
 
 
     def forward(self, inputs, icm):
-
         if icm == False:
             """A3C"""
             inputs, (a3c_hx, a3c_cx) = inputs
-
+           
             x = F.elu(self.conv1(inputs))
             x = F.elu(self.conv2(x))
             x = F.elu(self.conv3(x))
