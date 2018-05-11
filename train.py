@@ -74,7 +74,7 @@ def train(rank, args, shared_model, optimizer=None):
             log_prob = F.log_softmax(logit)
             entropy = -(log_prob * prob).sum(1)
             entropies.append(entropy)
-
+            # sample an action
             action = prob.multinomial().data
             log_prob = log_prob.gather(1, Variable(action))
 
@@ -85,10 +85,13 @@ def train(rank, args, shared_model, optimizer=None):
             oh_action = Variable(oh_action).cuda()
             a_t = oh_action
             actions.append(oh_action)
-
             state, reward, done, _ = env.step(action.cpu().numpy()[0][0])
-            state = torch.from_numpy(state)
+            if done:
+                #print 'total reward', _['TOTAL_REWARD']
+                print 'reward ', reward
+                #print 'kill count', _['KILLCOUNT']
 
+            state = torch.from_numpy(state)
             done = done or episode_length >= args.max_episode_length
             reward = max(min(reward, 1), -1)
             s_t1 = state
@@ -107,6 +110,7 @@ def train(rank, args, shared_model, optimizer=None):
             reward += reward_intrinsic
 
             if done:
+                print 'done at ', episode_length * args.num_steps 
                 episode_length = 0
                 state = env.reset()
                 state = torch.from_numpy(state)
@@ -139,8 +143,8 @@ def train(rank, args, shared_model, optimizer=None):
         for i in reversed(range(len(rewards))):
             R = args.gamma * R + rewards[i]
             advantage = R - values[i].cpu()
+            #print value_loss
             value_loss = value_loss + 0.5 * advantage.pow(2)
-
             # Generalized Advantage Estimataion
             delta_t = rewards[i] + args.gamma * \
                 values[i + 1].cpu().data - values[i].cpu().data
@@ -164,7 +168,7 @@ def train(rank, args, shared_model, optimizer=None):
 
         torch.nn.utils.clip_grad_norm(model.parameters(), 40)
         if (episode_length + 1) % 50 == 0:
-            log = 'step %d: forward loss %.5f, inverse loss %.5f, cross_entropy %.5fi \n'%(episode_length, forward_loss, inverse_loss, cross_entropy)
+            log = 'step %d: forward loss %.5f, inverse loss %.5f, cross_entropy %.5f \n'%(episode_length, forward_loss, inverse_loss, cross_entropy)
             print(log)
         ensure_shared_grads(model, shared_model)
         optimizer.step()
